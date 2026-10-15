@@ -40,6 +40,10 @@ pub(super) async fn execute_start(args: StartArgs, _verbose: bool) -> Result<()>
             println!("  Backend:  LXD");
             println!("  Storage:  {}", config.proxmox_storage); // reused as the pool name
         }
+        BackendType::Maas => {
+            println!("  Backend:  MAAS (vm-host {})", config.maas_vm_host_id.unwrap_or(0));
+            println!("  Subnet:   {}", config.maas_subnet.clone().unwrap_or_default());
+        }
         BackendType::Docker => {
             println!("  Backend:  Docker");
             println!("  Note:     templates require Docker; ensure `docker` is on PATH");

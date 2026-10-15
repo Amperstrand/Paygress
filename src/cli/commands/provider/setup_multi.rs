@@ -229,6 +229,12 @@ fn build_multi_config(
         http_bind_addr: None,
         lightning_address: args.lightning_address.clone(),
         kvm_base_image_path: None,
+            maas_vm_host_id: None,
+            maas_subnet: None,
+            maas_vlan_id: None,
+            maas_lxd_ssh_target: None,
+            maas_profile: None,
+            maas_distro_series: None,
         kvm_base_image_url: None,
         // Matches the serde default a config without the field parses to.
         min_free_disk_gb: 10,

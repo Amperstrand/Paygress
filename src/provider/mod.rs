@@ -23,7 +23,7 @@ pub(crate) use handlers::generate_password;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -366,7 +366,9 @@ impl ProviderService {
             api_endpoint: None,
             version: crate::nostr::SCHEMA_VERSION,
             isolation_level: match self.config.backend_type {
-                BackendType::Kvm => crate::nostr::IsolationLevel::DedicatedHost,
+                BackendType::Kvm | BackendType::Maas => {
+                    crate::nostr::IsolationLevel::DedicatedHost
+                }
                 BackendType::Proxmox | BackendType::LXD | BackendType::Docker => {
                     crate::nostr::IsolationLevel::SharedKernel
                 }

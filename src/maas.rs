@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn hostname_roundtrip() {
-        assert_eq!(Self::hostname(7), "paygress-7");
+        assert_eq!(MaasBackend::hostname(7), "paygress-7");
         assert_eq!(
             "paygress-7"
                 .strip_prefix(HOSTNAME_PREFIX)

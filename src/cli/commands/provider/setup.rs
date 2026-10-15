@@ -191,6 +191,14 @@ pub(super) async fn execute_setup(args: SetupArgs, _verbose: bool) -> Result<()>
         http_bind_addr: None,
         kvm_base_image_path: args.kvm_base_image_path,
         kvm_base_image_url: args.kvm_base_image_url,
+        // MAAS backend has no setup-wizard flags; operators fill these in
+        // the saved JSON by hand.
+        maas_vm_host_id: None,
+        maas_subnet: None,
+        maas_vlan_id: None,
+        maas_lxd_ssh_target: None,
+        maas_profile: None,
+        maas_distro_series: None,
         // Matches the serde default a config without the field parses to.
         min_free_disk_gb: 10,
     };
@@ -228,6 +236,13 @@ pub(super) async fn execute_setup(args: SetupArgs, _verbose: bool) -> Result<()>
                 "  {} Ensure `lxc` is on PATH and the service user is in the `lxd` group.",
                 "→".cyan()
             );
+            return finalize_setup(&config.provider_name);
+        }
+        BackendType::Maas => {
+            println!("  {} Backend = MAAS; no Proxmox check.", "⚙".yellow());
+            println!("  {} Fill maas_* fields in {CONFIG_PATH} by hand:", "→".cyan());
+            println!("     vm-host id, subnet, vlan id, lxd ssh target");
+            println!("     (maas CLI on PATH with a logged-in profile).");
             return finalize_setup(&config.provider_name);
         }
         BackendType::Proxmox => {}
