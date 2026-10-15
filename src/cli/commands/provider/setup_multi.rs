@@ -189,6 +189,9 @@ fn build_multi_config(
     let vmid_start = 1000 + i as u32 * VMID_RANGE_SIZE;
     let vmid_end = vmid_start + VMID_RANGE_SIZE - 1;
     ProviderConfig {
+        maas_url: None,
+        maas_api_key: None,
+        maas_vm_host_id: None,
         backend_type: args.backend,
         public_ip: public_ip.to_string(),
         // setup-multi targets KVM/Docker/LXD, so Proxmox-via-API
