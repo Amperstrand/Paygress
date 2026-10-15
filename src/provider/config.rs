@@ -14,6 +14,10 @@ pub enum BackendType {
     /// One VM per spawn, each with its own kernel. Requires `/dev/kvm` and
     /// `qemu-system-x86_64`; does not serve Docker templates.
     Kvm,
+    /// Workloads are MAAS machines (VMs on a registered LXD VM host). The
+    /// provider talks to the MAAS CLI; MAAS stays the source of truth for
+    /// compute. No templates — deploys a plain cloud image with SSH.
+    Maas,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +113,26 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub kvm_base_image_url: Option<String>,
 
+    /// MAAS backend: id of the registered LXD VM host that spawns land on.
+    #[serde(default)]
+    pub maas_vm_host_id: Option<u32>,
+    /// MAAS backend: subnet constraint for spawned NICs (e.g. `10.0.0.0/24`).
+    #[serde(default)]
+    pub maas_subnet: Option<String>,
+    /// MAAS backend: VLAN id for the spawned NIC (`maas vlans read`).
+    #[serde(default)]
+    pub maas_vlan_id: Option<u32>,
+    /// MAAS backend: SSH target of the LXD host for the instance-MAC fix
+    /// (key auth only).
+    #[serde(default)]
+    pub maas_lxd_ssh_target: Option<String>,
+    /// MAAS backend: CLI profile name; defaults to `admin`.
+    #[serde(default)]
+    pub maas_profile: Option<String>,
+    /// MAAS backend: distro series deployed on spawn; defaults to `noble`.
+    #[serde(default)]
+    pub maas_distro_series: Option<String>,
+
     /// Refuse a spawn when the host has less than this much disk free, before
     /// the token is redeemed. A provider that accepts work it cannot store takes
     /// payment and then fails during provisioning -- or worse, succeeds and dies
@@ -193,6 +217,12 @@ impl Default for ProviderConfig {
             http_bind_addr: None,
             lightning_address: None,
             kvm_base_image_path: None,
+            maas_vm_host_id: None,
+            maas_subnet: None,
+            maas_vlan_id: None,
+            maas_lxd_ssh_target: None,
+            maas_profile: None,
+            maas_distro_series: None,
             kvm_base_image_url: None,
             min_free_disk_gb: default_min_free_disk_gb(),
         }

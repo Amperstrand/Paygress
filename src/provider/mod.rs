@@ -116,6 +116,33 @@ impl ProviderService {
                     ),
                 ))
             }
+            BackendType::Maas => {
+                // Fail at startup, not at the first spawn (a consumer has
+                // already committed a Cashu token by then).
+                let vm_host_id = config.maas_vm_host_id.context(
+                    "maas backend requires maas_vm_host_id in the provider config",
+                )?;
+                let subnet = config
+                    .maas_subnet
+                    .clone()
+                    .context("maas backend requires maas_subnet")?;
+                let vlan_id = config.maas_vlan_id.context("maas backend requires maas_vlan_id")?;
+                let lxd_ssh_target = config
+                    .maas_lxd_ssh_target
+                    .clone()
+                    .context("maas backend requires maas_lxd_ssh_target")?;
+                Arc::new(crate::maas::MaasBackend::new(crate::maas::MaasConfig {
+                    vm_host_id,
+                    subnet,
+                    vlan_id,
+                    lxd_ssh_target,
+                    profile: config.maas_profile.clone().unwrap_or_else(|| "admin".into()),
+                    distro_series: config
+                        .maas_distro_series
+                        .clone()
+                        .unwrap_or_else(|| "noble".into()),
+                }))
+            }
         };
 
         let relay_config = RelayConfig {

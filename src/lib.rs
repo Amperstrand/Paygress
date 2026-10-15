@@ -10,6 +10,7 @@ pub mod durable_workload;
 pub mod kvm;
 pub mod luks;
 pub mod lxd;
+pub mod maas;
 pub mod namegen;
 pub mod nostr;
 pub mod observatory;

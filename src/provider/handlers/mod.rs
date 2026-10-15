@@ -122,7 +122,9 @@ fn unix_now() -> Result<u64> {
 }
 
 /// Generous enough for a cold image unpack, which is the slowest honest case.
-const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// 600s: the MAAS backend's spawn path includes a deploy (measured 3-4.5
+/// min after skip-commissioning); 300s left no margin.
+const BACKEND_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Backends shell out to `lxc` or `qm`, or call a remote API; none of them is
 /// guaranteed to return. A stall becomes an ordinary error, so the caller keeps
