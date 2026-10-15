@@ -72,8 +72,9 @@ fn parse_backend(s: &str) -> std::result::Result<BackendType, String> {
         "lxd" => Ok(BackendType::LXD),
         "docker" => Ok(BackendType::Docker),
         "kvm" => Ok(BackendType::Kvm),
+        "maas" => Ok(BackendType::Maas),
         other => Err(format!(
-            "unknown backend `{}` (expected one of: proxmox, lxd, docker, kvm)",
+            "unknown backend `{}` (expected one of: proxmox, lxd, docker, kvm, maas)",
             other
         )),
     }

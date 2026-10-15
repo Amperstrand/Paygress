@@ -50,6 +50,23 @@ pub(super) async fn execute_start(args: StartArgs, _verbose: bool) -> Result<()>
                 "  Note:     requires /dev/kvm + qemu-system-x86_64; killer templates not served"
             );
         }
+        BackendType::Maas => {
+            println!("  Backend:  MAAS (region-managed VMs, dedicated-host tier)");
+            println!(
+                "  Region:   {}",
+                config
+                    .maas_url
+                    .as_deref()
+                    .unwrap_or("(env PAYGRESS_MAAS_URL)")
+            );
+            println!(
+                "  VM host:  {}",
+                config
+                    .maas_vm_host_id
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "(env PAYGRESS_MAAS_VM_HOST)".to_string())
+            );
+        }
     }
     println!();
 
