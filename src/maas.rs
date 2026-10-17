@@ -312,6 +312,23 @@ impl ComputeBackend for MaasBackend {
         .context("machine deploy")?;
         self.wait_status(&sid, "Deployed", 420).await?;
 
+        // 4. SSH reachability: consumers dial `public_ip : host_port`
+        //    (spawn handler sets it from ssh_host_port(id)), so forward that
+        //    port on the LXD host into the VM — same proxy-device mechanism
+        //    the upstream LXD backend uses.
+        if let Some(port) = config.host_port {
+            let ip = self
+                .get_container_ip(id)
+                .await?
+                .context("workload deployed but has no IP for the ssh proxy device")?;
+            self.lxd_ssh(&format!(
+                "sudo lxc config device add {hostname} ssh-proxy proxy \
+                 listen=tcp:0.0.0.0:{port} connect=tcp:{ip}:22"
+            ))
+            .await
+            .context("add ssh proxy device")?;
+        }
+
         self.system_ids.lock().unwrap().insert(id, sid.clone());
         info!("MAAS workload {hostname} ({sid}) deployed");
         Ok(hostname)
