@@ -55,6 +55,12 @@ pub struct MaasConfig {
     /// Source address on the macvlan peer, used for the /32 routes and the
     /// SNAT of forwarded SSH flows.
     pub mv_ip: String,
+    /// NIC parent for tenant-VLAN workloads (e.g. `enp0s31f6.512`). When
+    /// set, compose runs PLAIN (the interfaces subnet constraint is only
+    /// satisfiable on networks the pod host itself sits on — the mgmt
+    /// VLAN) and the NIC is retagged to this parent after compose. Empty
+    /// = legacy constraint path.
+    pub lxd_nic_parent: String,
     /// When set, SSH forwards (DNAT) land on this host instead of the LXD
     /// host — e.g. `root:<vps-ip>` for tenant-VLAN workloads whose only
     /// public entry is a VPS port-forward routed to the tenant subnet over
@@ -270,12 +276,30 @@ impl MaasBackend {
         //    layout; without it, both must be registered by hand:
         //    create-physical -> link-subnet (DHCP) -> set-storage-layout
         //    (flat root) -> mark-fixed reaches Ready in ~60s, no commission.
-        let mac = random_mac();
-        self.lxd_ssh(&format!(
-            "sudo lxc stop -f {hostname} 2>/dev/null; sudo lxc config set {hostname} volatile.eth0.hwaddr {mac}"
-        ))
-        .await
-        .context("set instance MAC via lxd host")?;
+        let mac = if self.config.lxd_nic_parent.is_empty() {
+            let mac = random_mac();
+            self.lxd_ssh(&format!(
+                "sudo lxc stop -f {hostname} 2>/dev/null; sudo lxc config set {hostname} volatile.eth0.hwaddr {mac}"
+            ))
+            .await
+            .context("set instance MAC via lxd host")?;
+            mac
+        } else {
+            // Tenant path: plain compose auto-boots on the pod default
+            // network — stop it before PXE, retag the NIC parent to the
+            // tenant VLAN, then read the REAL MAC (device surgery resets
+            // volatile.hwaddr — vm-provision lesson #2).
+            self.lxd_ssh(&format!(
+                "sudo lxc stop -f {hostname} 2>/dev/null; \
+                 sudo lxc config device set {hostname} eth0 parent={parent} >/dev/null 2>&1; \
+                 sudo lxc config get {hostname} volatile.eth0.hwaddr",
+                parent = self.config.lxd_nic_parent,
+            ))
+            .await
+            .context("retag NIC to tenant VLAN")?
+            .trim()
+            .to_string()
+        };
         self.maas(&["machine", "mark-broken", &sid]).await?;
         let iface = self
             .maas_json(&[
@@ -451,17 +475,24 @@ impl ComputeBackend for MaasBackend {
         // 1. Compose the instance on the LXD pod. The compose's own auto-
         //    boot stalls harmlessly (unregistered interface); the fix below
         //    replaces it before deploy.
+        // The interfaces subnet constraint is only satisfiable on networks
+        // the pod host itself sits on (the mgmt VLAN); tenant VLANs compose
+        // plain and retag the NIC in step 2 (vm-provision lesson #1).
+        let mut compose_args: Vec<String> = vec![
+            "vm-host".into(),
+            "compose".into(),
+            self.config.vm_host_id.to_string(),
+            format!("cores={}", config.cpu_cores),
+            format!("memory={}", config.memory_mb),
+            format!("disks=1:size={}", config.storage_gb),
+        ];
+        if self.config.lxd_nic_parent.is_empty() {
+            compose_args.push(format!("interfaces=0:subnet={}", self.config.subnet));
+        }
+        compose_args.push(format!("hostname={hostname}"));
+        let compose_refs: Vec<&str> = compose_args.iter().map(|s| s.as_str()).collect();
         let composed = self
-            .maas_json(&[
-                "vm-host",
-                "compose",
-                &self.config.vm_host_id.to_string(),
-                &format!("cores={}", config.cpu_cores),
-                &format!("memory={}", config.memory_mb),
-                &format!("disks=1:size={}", config.storage_gb),
-                &format!("interfaces=0:subnet={}", self.config.subnet),
-                &format!("hostname={hostname}"),
-            ])
+            .maas_json(&compose_refs)
             .await
             .context("vm-host compose")?;
         let sid = composed["system_id"]

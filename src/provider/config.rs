@@ -143,6 +143,11 @@ pub struct ProviderConfig {
     /// public VPS) instead of the LXD host — the tenant-VLAN access model.
     #[serde(default)]
     pub maas_forward_ssh_target: Option<String>,
+    /// MAAS backend: NIC parent for tenant-VLAN workloads (e.g.
+    /// `enp0s31f6.512`). Plain compose + NIC retag instead of the subnet
+    /// constraint.
+    #[serde(default)]
+    pub maas_lxd_nic_parent: Option<String>,
 
     /// Refuse a spawn when the host has less than this much disk free, before
     /// the token is redeemed. A provider that accepts work it cannot store takes
@@ -237,6 +242,7 @@ impl Default for ProviderConfig {
             maas_macvlan_parent: None,
             maas_macvlan_ip: None,
             maas_forward_ssh_target: None,
+            maas_lxd_nic_parent: None,
             kvm_base_image_url: None,
             min_free_disk_gb: default_min_free_disk_gb(),
         }
