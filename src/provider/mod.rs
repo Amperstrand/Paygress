@@ -142,6 +142,11 @@ impl ProviderService {
                         .clone()
                         .unwrap_or_else(|| "noble".into()),
                     listen_host: config.public_ip.clone(),
+                    mv_parent: config
+                        .maas_macvlan_parent
+                        .clone()
+                        .unwrap_or_default(),
+                    mv_ip: config.maas_macvlan_ip.clone().unwrap_or_default(),
                 }))
             }
         };

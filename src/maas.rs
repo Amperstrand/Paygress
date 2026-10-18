@@ -48,6 +48,13 @@ pub struct MaasConfig {
     pub profile: String,
     /// Distro series deployed on spawn (e.g. `noble`).
     pub distro_series: String,
+    /// macvlan peer: lower device (e.g. `eth0.2`) for the host-side
+    /// macvlan bridge that reaches the guests — the host's own stack is
+    /// isolated from macvlan guests without it.
+    pub mv_parent: String,
+    /// Source address on the macvlan peer, used for the /32 routes and the
+    /// SNAT of forwarded SSH flows.
+    pub mv_ip: String,
     /// Host address the SSH DNAT rules listen on (the provider public_ip):
     /// NAT-mode LXD proxies reject wildcard listens, non-NAT proxies are
     /// unsupported on VM instances, and NAT connect-IPs must be LXD-static —
@@ -146,7 +153,7 @@ impl MaasBackend {
         format!(
             "#cloud-config\n\
              ssh_pwauth: true\n\
-             chpasswd:\n  expire: false\n  list: \"ubuntu:{pw}\"\n\
+             chpasswd:\n  expire: false\n  users:\n    - name: ubuntu\n      password: {pw}\n      type: text\n\
              ssh_authorized_keys:\n{keys}\
              packages: [qemu-guest-agent]\n\
              runcmd:\n  - systemctl enable --now qemu-guest-agent || true\n",
@@ -177,6 +184,36 @@ impl MaasBackend {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
+    /// One-time host plumbing for reachable workloads:
+    ///  - a host-side macvlan bridge peer (the host cannot talk to its own
+    ///    macvlan guests without one)
+    ///  - a global SNAT for SSH flows leaving via the peer, so guest replies
+    ///    come back through the conntrack that DNAT'd them
+    ///  - an ESTABLISHED forward accept (ufw's default forward policy drops)
+    /// All idempotent; safe on every spawn.
+    async fn ensure_host_forwarding(&self) -> Result<()> {
+        let rc = self
+            .lxd_ssh(&format!(
+                "ip link show paygress-mv >/dev/null 2>&1 || \
+                 (sudo ip link add paygress-mv link {parent} type macvlan mode bridge && \
+                  sudo ip addr add {ip}/32 dev paygress-mv && \
+                  sudo ip link set paygress-mv up && \
+                  sudo iptables -t nat -A POSTROUTING -o paygress-mv -p tcp --dport 22 \
+                    -j SNAT --to-source {ip} -m comment --comment paygress-mv && \
+                  sudo iptables -I FORWARD 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT \
+                    -m comment --comment paygress-mv)",
+                parent = self.config.mv_parent,
+                ip = self.config.mv_ip,
+            ))
+            .await;
+        if rc.is_err() {
+            // Already-configured hosts answer `ip link show` with success,
+            // so an error here means the create path failed — surface it.
+            debug!("host forwarding ensure rc: {rc:?}");
+        }
+        Ok(())
+    }
+
     /// MAAS records the deployed machine's DHCP lease in its interface
     /// links a beat AFTER the status flips to Deployed — one immediate
     /// lookup races that write and reaped healthy workloads (#194).
@@ -285,6 +322,12 @@ impl MaasBackend {
                 .await_workload_ip(id, 90)
                 .await?
                 .context("workload deployed but no IP appeared for the ssh proxy device")?;
+            // Per-VM /32 route through the macvlan peer: DNAT'd packets
+            // must egress the peer, not the host's own VLAN interface
+            // (macvlan isolation drops those).
+            let _ = self
+                .lxd_ssh(&format!("sudo ip route replace {ip}/32 dev paygress-mv"))
+                .await;
             self.lxd_ssh(&format!(
                 "sudo iptables -t nat -A PREROUTING -d {host} -p tcp --dport {port} \
                  -j DNAT --to-destination {ip}:22 -m comment --comment paygress-{id} && \
@@ -370,6 +413,8 @@ impl ComputeBackend for MaasBackend {
             "Provisioning via MAAS: id={id} cores={} mem={}MB disk={}GB",
             config.cpu_cores, config.memory_mb, config.storage_gb
         );
+
+        self.ensure_host_forwarding().await?;
 
         // 1. Compose the instance on the LXD pod. The compose's own auto-
         //    boot stalls harmlessly (unregistered interface); the fix below

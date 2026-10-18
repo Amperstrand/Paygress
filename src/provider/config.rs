@@ -132,6 +132,13 @@ pub struct ProviderConfig {
     /// MAAS backend: distro series deployed on spawn; defaults to `noble`.
     #[serde(default)]
     pub maas_distro_series: Option<String>,
+    /// MAAS backend: lower device for the host-side macvlan peer (the host
+    /// cannot reach its own macvlan guests without one).
+    #[serde(default)]
+    pub maas_macvlan_parent: Option<String>,
+    /// MAAS backend: address on the macvlan peer for /32 routes + SNAT.
+    #[serde(default)]
+    pub maas_macvlan_ip: Option<String>,
 
     /// Refuse a spawn when the host has less than this much disk free, before
     /// the token is redeemed. A provider that accepts work it cannot store takes
@@ -223,6 +230,8 @@ impl Default for ProviderConfig {
             maas_lxd_ssh_target: None,
             maas_profile: None,
             maas_distro_series: None,
+            maas_macvlan_parent: None,
+            maas_macvlan_ip: None,
             kvm_base_image_url: None,
             min_free_disk_gb: default_min_free_disk_gb(),
         }
