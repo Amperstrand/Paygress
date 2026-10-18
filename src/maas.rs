@@ -176,9 +176,21 @@ impl MaasBackend {
     /// lookup races that write and reaped healthy workloads (#194).
     async fn await_workload_ip(&self, id: u32, deadline_secs: u64) -> Result<Option<String>> {
         let start = std::time::Instant::now();
+        let hostname = Self::hostname(id);
         loop {
             if let Some(ip) = self.get_container_ip(id).await? {
                 return Ok(Some(ip));
+            }
+            // MAAS's lease-notification path drops DHCPACKs on this install
+            // (dhcpd.sock warnings), so interface links never populate; the
+            // LXD guest IP is the same fact from a source that never misses.
+            if let Ok(out) = self
+                .lxd_ssh(&format!("sudo lxc list {hostname} --format csv -c 4 2>/dev/null"))
+                .await
+            {
+                if let Some(ip) = parse_first_ipv4(&out) {
+                    return Ok(Some(ip));
+                }
             }
             if start.elapsed().as_secs() > deadline_secs {
                 return Ok(None);
@@ -299,6 +311,13 @@ async fn run_checked(argv: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// First IPv4 literal in a free-form string (lxc csv output).
+fn parse_first_ipv4(s: &str) -> Option<String> {
+    s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.'))
+        .find(|t| t.parse::<std::net::Ipv4Addr>().is_ok())
+        .map(str::to_string)
 }
 
 /// Fresh locally-administered MAC in the QEMU OUI space. Collisions are
