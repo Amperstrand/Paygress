@@ -171,6 +171,100 @@ impl MaasBackend {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
+    /// Everything after compose. Split out so create_container can reap the
+    /// composed machine when any later step fails.
+    async fn finish_create(
+        &self,
+        config: &ContainerConfig,
+        id: u32,
+        hostname: &str,
+        sid: &str,
+    ) -> Result<String> {
+        let hostname = hostname.to_string();
+
+        // 2. Fresh MAC on the instance + explicit interface registration.
+        //    Commissioning would normally discover the NIC link and storage
+        //    layout; without it, both must be registered by hand:
+        //    create-physical -> link-subnet (DHCP) -> set-storage-layout
+        //    (flat root) -> mark-fixed reaches Ready in ~60s, no commission.
+        let mac = random_mac();
+        self.lxd_ssh(&format!(
+            "sudo lxc stop -f {hostname} 2>/dev/null; sudo lxc config set {hostname} volatile.eth0.hwaddr {mac}"
+        ))
+        .await
+        .context("set instance MAC via lxd host")?;
+        self.maas(&["machine", "mark-broken", &sid]).await?;
+        let iface = self
+            .maas_json(&[
+                "interfaces",
+                "create-physical",
+                &sid,
+                &format!("mac_address={mac}"),
+                &format!("vlan={}", self.config.vlan_id),
+                "name=eth0",
+            ])
+            .await
+            .context("create-physical interface")?;
+        let iface_id = iface["id"]
+            .as_u64()
+            .context("create-physical returned no interface id")?
+            .to_string();
+        self.maas(&[
+            "interface",
+            "link-subnet",
+            &sid,
+            &iface_id,
+            &format!("subnet={}", self.config.subnet),
+            "mode=DHCP",
+        ])
+        .await
+        .context("link interface to subnet")?;
+        // Order matters (#194 field notes): set-storage-layout is rejected on
+        // a Broken machine (manual proof had it in Ready), and mark-fixed is
+        // what reaches Ready without commissioning.
+        self.maas(&["machine", "mark-fixed", &sid]).await?;
+        self.maas(&["machine", "set-storage-layout", &sid, "storage_layout=flat"])
+            .await
+            .context("set root storage layout")?;
+        self.wait_status(&sid, "Ready", 120).await?;
+
+        // 3. Deploy (deploy-only measured 3-4.5 min, inside the fork's
+        //    raised BACKEND_CALL_TIMEOUT).
+        let user_data = BASE64.encode(Self::user_data(config));
+        self.maas(&[
+            "machine",
+            "deploy",
+            &sid,
+            &format!("user_data={user_data}"),
+            &format!("distro_series={}", self.config.distro_series),
+        ])
+        .await
+        .context("machine deploy")?;
+        self.wait_status(&sid, "Deployed", 420).await?;
+
+        // 4. SSH reachability: consumers dial `public_ip : host_port`
+        //    (spawn handler sets it from ssh_host_port(id)), so forward that
+        //    port on the LXD host into the VM — same proxy-device mechanism
+        //    the upstream LXD backend uses.
+        if let Some(port) = config.host_port {
+            let ip = self
+                .get_container_ip(id)
+                .await?
+                .context("workload deployed but has no IP for the ssh proxy device")?;
+            self.lxd_ssh(&format!(
+                "sudo lxc config device add {hostname} ssh-proxy proxy \
+                 listen=tcp:0.0.0.0:{port} connect=tcp:{ip}:22"
+            ))
+            .await
+            .context("add ssh proxy device")?;
+        }
+
+        self.system_ids.lock().unwrap().insert(id, sid.to_string());
+        info!("MAAS workload {hostname} ({sid}) deployed");
+        Ok(hostname)
+    }
+
+
 }
 
 /// Run a command, failing with the child's stderr when it exits non-zero
@@ -255,83 +349,13 @@ impl ComputeBackend for MaasBackend {
             .to_string();
         debug!("composed {hostname} -> {sid}");
 
-        // 2. Fresh MAC on the instance + explicit interface registration.
-        //    Commissioning would normally discover the NIC link and storage
-        //    layout; without it, both must be registered by hand:
-        //    create-physical -> link-subnet (DHCP) -> set-storage-layout
-        //    (flat root) -> mark-fixed reaches Ready in ~60s, no commission.
-        let mac = random_mac();
-        self.lxd_ssh(&format!(
-            "sudo lxc stop -f {hostname} 2>/dev/null; sudo lxc config set {hostname} volatile.eth0.hwaddr {mac}"
-        ))
-        .await
-        .context("set instance MAC via lxd host")?;
-        self.maas(&["machine", "mark-broken", &sid]).await?;
-        let iface = self
-            .maas_json(&[
-                "interfaces",
-                "create-physical",
-                &sid,
-                &format!("mac_address={mac}"),
-                &format!("vlan={}", self.config.vlan_id),
-                "name=eth0",
-            ])
-            .await
-            .context("create-physical interface")?;
-        let iface_id = iface["id"]
-            .as_u64()
-            .context("create-physical returned no interface id")?
-            .to_string();
-        self.maas(&[
-            "interface",
-            "link-subnet",
-            &sid,
-            &iface_id,
-            &format!("subnet={}", self.config.subnet),
-            "mode=DHCP",
-        ])
-        .await
-        .context("link interface to subnet")?;
-        self.maas(&["machine", "set-storage-layout", &sid, "storage_layout=flat"])
-            .await
-            .context("set root storage layout")?;
-        self.maas(&["machine", "mark-fixed", &sid]).await?;
-        self.wait_status(&sid, "Ready", 120).await?;
-
-        // 3. Deploy (deploy-only measured 3-4.5 min, inside the fork's
-        //    raised BACKEND_CALL_TIMEOUT).
-        let user_data = BASE64.encode(Self::user_data(config));
-        self.maas(&[
-            "machine",
-            "deploy",
-            &sid,
-            &format!("user_data={user_data}"),
-            &format!("distro_series={}", self.config.distro_series),
-        ])
-        .await
-        .context("machine deploy")?;
-        self.wait_status(&sid, "Deployed", 420).await?;
-
-        // 4. SSH reachability: consumers dial `public_ip : host_port`
-        //    (spawn handler sets it from ssh_host_port(id)), so forward that
-        //    port on the LXD host into the VM — same proxy-device mechanism
-        //    the upstream LXD backend uses.
-        if let Some(port) = config.host_port {
-            let ip = self
-                .get_container_ip(id)
-                .await?
-                .context("workload deployed but has no IP for the ssh proxy device")?;
-            self.lxd_ssh(&format!(
-                "sudo lxc config device add {hostname} ssh-proxy proxy \
-                 listen=tcp:0.0.0.0:{port} connect=tcp:{ip}:22"
-            ))
-            .await
-            .context("add ssh proxy device")?;
+        let result = self.finish_create(config, id, &hostname, &sid).await;
+        if result.is_err() {
+            // A failed spawn must not leave the composed machine behind:
+            // it holds the vmid and the LXD instance hostage.
+            let _ = self.delete_container(id).await;
         }
-
-        self.system_ids.lock().unwrap().insert(id, sid.clone());
-        info!("MAAS workload {hostname} ({sid}) deployed");
-        Ok(hostname)
+        result
     }
 
     async fn start_container(&self, id: u32) -> Result<()> {
