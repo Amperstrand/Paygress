@@ -147,6 +147,7 @@ impl ProviderService {
                         .clone()
                         .unwrap_or_default(),
                     mv_ip: config.maas_macvlan_ip.clone().unwrap_or_default(),
+                    forward_ssh_target: config.maas_forward_ssh_target.clone(),
                 }))
             }
         };

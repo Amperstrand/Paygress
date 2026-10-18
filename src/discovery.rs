@@ -10,7 +10,9 @@ pub struct DiscoveryClient {
 }
 
 /// A provider whose most recent heartbeat is older than this reports offline.
-const ONLINE_HEARTBEAT_WINDOW_SECS: u64 = 120;
+// 600s: a fresh consumer client races relay backfill — 120s rejected
+// known-online providers repeatedly (#194 field finding).
+const ONLINE_HEARTBEAT_WINDOW_SECS: u64 = 600;
 
 impl DiscoveryClient {
     /// Read-only client; no key needed for queries.

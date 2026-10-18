@@ -139,6 +139,10 @@ pub struct ProviderConfig {
     /// MAAS backend: address on the macvlan peer for /32 routes + SNAT.
     #[serde(default)]
     pub maas_macvlan_ip: Option<String>,
+    /// MAAS backend: when set, SSH forwards land on this host (e.g. the
+    /// public VPS) instead of the LXD host — the tenant-VLAN access model.
+    #[serde(default)]
+    pub maas_forward_ssh_target: Option<String>,
 
     /// Refuse a spawn when the host has less than this much disk free, before
     /// the token is redeemed. A provider that accepts work it cannot store takes
@@ -232,6 +236,7 @@ impl Default for ProviderConfig {
             maas_distro_series: None,
             maas_macvlan_parent: None,
             maas_macvlan_ip: None,
+            maas_forward_ssh_target: None,
             kvm_base_image_url: None,
             min_free_disk_gb: default_min_free_disk_gb(),
         }

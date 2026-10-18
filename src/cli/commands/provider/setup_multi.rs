@@ -237,6 +237,7 @@ fn build_multi_config(
             maas_distro_series: None,
         maas_macvlan_parent: None,
         maas_macvlan_ip: None,
+        maas_forward_ssh_target: None,
         kvm_base_image_url: None,
         // Matches the serde default a config without the field parses to.
         min_free_disk_gb: 10,

@@ -55,6 +55,12 @@ pub struct MaasConfig {
     /// Source address on the macvlan peer, used for the /32 routes and the
     /// SNAT of forwarded SSH flows.
     pub mv_ip: String,
+    /// When set, SSH forwards (DNAT) land on this host instead of the LXD
+    /// host — e.g. `root:<vps-ip>` for tenant-VLAN workloads whose only
+    /// public entry is a VPS port-forward routed to the tenant subnet over
+    /// WireGuard. The target must be able to route to the workload IPs and
+    /// its iptables must be the live (nft) backend.
+    pub forward_ssh_target: Option<String>,
     /// Host address the SSH DNAT rules listen on (the provider public_ip):
     /// NAT-mode LXD proxies reject wildcard listens, non-NAT proxies are
     /// unsupported on VM instances, and NAT connect-IPs must be LXD-static —
@@ -94,19 +100,25 @@ impl MaasBackend {
     }
 
     async fn lxd_ssh(&self, command: &str) -> Result<String> {
+        let target = self.config.lxd_ssh_target.clone();
+        self.remote_ssh(&target, command).await
+    }
+
+    /// SSH to an arbitrary configured host (LXD host, VPS forwarder, ...).
+    async fn remote_ssh(&self, target: &str, command: &str) -> Result<String> {
         let out = Command::new("ssh")
             .arg("-o")
             .arg("BatchMode=yes")
             .arg("-o")
             .arg("StrictHostKeyChecking=accept-new")
-            .arg(&self.config.lxd_ssh_target)
+            .arg(target)
             .arg(command)
             .output()
             .await
-            .context("invoke ssh to lxd host")?;
+            .with_context(|| format!("invoke ssh to {target}"))?;
         if !out.status.success() {
             bail!(
-                "ssh lxd host failed: {}",
+                "ssh {target} failed: {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
@@ -314,29 +326,44 @@ impl MaasBackend {
         self.wait_status(&sid, "Deployed", 420).await?;
 
         // 4. SSH reachability: consumers dial `public_ip : host_port`
-        //    (spawn handler sets it from ssh_host_port(id)), so forward that
-        //    port on the LXD host into the VM — same proxy-device mechanism
-        //    the upstream LXD backend uses.
+        //    (the spawn handler sets it from ssh_host_port(id)). Two paths:
+        //    a configured forward host (tenant-VLAN model: the public VPS
+        //    DNATs straight to the workload over the tunnel), else the LXD
+        //    host (mgmt-VLAN model: macvlan peer + listen-host DNAT).
         if let Some(port) = config.host_port {
             let ip = self
                 .await_workload_ip(id, 90)
                 .await?
-                .context("workload deployed but no IP appeared for the ssh proxy device")?;
-            // Per-VM /32 route through the macvlan peer: DNAT'd packets
-            // must egress the peer, not the host's own VLAN interface
-            // (macvlan isolation drops those).
-            let _ = self
-                .lxd_ssh(&format!("sudo ip route replace {ip}/32 dev paygress-mv"))
-                .await;
-            self.lxd_ssh(&format!(
-                "sudo iptables -t nat -A PREROUTING -d {host} -p tcp --dport {port} \
-                 -j DNAT --to-destination {ip}:22 -m comment --comment paygress-{id} && \
-                 sudo iptables -I FORWARD 1 -d {ip} -p tcp --dport 22 -j ACCEPT \
-                 -m comment --comment paygress-{id}",
-                host = self.config.listen_host,
-            ))
-            .await
-            .context("add ssh DNAT forward")?;
+                .context("workload deployed but no IP appeared for the ssh forward")?;
+            match &self.config.forward_ssh_target {
+                Some(target) => {
+                    self.remote_ssh(target, &format!(
+                        "iptables -t nat -A PREROUTING -p tcp --dport {port} \
+                         -j DNAT --to-destination {ip}:22 -m comment --comment paygress-{id} && \
+                         iptables -I FORWARD 1 -d {ip} -p tcp --dport 22 -j ACCEPT \
+                         -m comment --comment paygress-{id}"
+                    ))
+                    .await
+                    .context("add ssh DNAT forward on public host")?;
+                }
+                None => {
+                    // Per-VM /32 route through the macvlan peer: DNAT'd packets
+                    // must egress the peer, not the host's own VLAN interface
+                    // (macvlan isolation drops those).
+                    let _ = self
+                        .lxd_ssh(&format!("sudo ip route replace {ip}/32 dev paygress-mv"))
+                        .await;
+                    self.lxd_ssh(&format!(
+                        "sudo iptables -t nat -A PREROUTING -d {host} -p tcp --dport {port} \
+                         -j DNAT --to-destination {ip}:22 -m comment --comment paygress-{id} && \
+                         sudo iptables -I FORWARD 1 -d {ip} -p tcp --dport 22 -j ACCEPT \
+                         -m comment --comment paygress-{id}",
+                        host = self.config.listen_host,
+                    ))
+                    .await
+                    .context("add ssh DNAT forward")?;
+                }
+            }
         }
 
         self.system_ids.lock().unwrap().insert(id, sid.to_string());
@@ -414,7 +441,12 @@ impl ComputeBackend for MaasBackend {
             config.cpu_cores, config.memory_mb, config.storage_gb
         );
 
-        self.ensure_host_forwarding().await?;
+        if self.config.forward_ssh_target.is_none() {
+            // The macvlan peer + SNAT plumbing exists so the LXD host can
+            // talk to its own macvlan guests; the public-forwarder path
+            // never routes through it.
+            self.ensure_host_forwarding().await?;
+        }
 
         // 1. Compose the instance on the LXD pod. The compose's own auto-
         //    boot stalls harmlessly (unregistered interface); the fix below
@@ -481,6 +513,17 @@ impl ComputeBackend for MaasBackend {
                  sudo iptables -S FORWARD | grep -F 'paygress-{id}' | sed 's/^-A /-D /' | while read -r r; do sudo iptables $r; done"
             ))
             .await;
+        // The public-forwarder variant of the same cleanup (no sudo — root
+        // on the forward host; the grep matches nothing when the LXD path
+        // owned the rules, so running both is safe).
+        if let Some(target) = &self.config.forward_ssh_target {
+            let _ = self
+                .remote_ssh(target, &format!(
+                    "iptables -t nat -S PREROUTING | grep -F 'paygress-{id}' | sed 's/^-A /-t nat -D /' | while read -r r; do iptables $r; done; \
+                     iptables -S FORWARD | grep -F 'paygress-{id}' | sed 's/^-A /-D /' | while read -r r; do iptables $r; done"
+                ))
+                .await;
+        }
         self.system_ids.lock().unwrap().remove(&id);
         Ok(())
     }
