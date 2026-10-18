@@ -171,6 +171,22 @@ impl MaasBackend {
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
     }
+    /// MAAS records the deployed machine's DHCP lease in its interface
+    /// links a beat AFTER the status flips to Deployed — one immediate
+    /// lookup races that write and reaped healthy workloads (#194).
+    async fn await_workload_ip(&self, id: u32, deadline_secs: u64) -> Result<Option<String>> {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(ip) = self.get_container_ip(id).await? {
+                return Ok(Some(ip));
+            }
+            if start.elapsed().as_secs() > deadline_secs {
+                return Ok(None);
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+
     /// Everything after compose. Split out so create_container can reap the
     /// composed machine when any later step fails.
     async fn finish_create(
@@ -248,9 +264,9 @@ impl MaasBackend {
         //    the upstream LXD backend uses.
         if let Some(port) = config.host_port {
             let ip = self
-                .get_container_ip(id)
+                .await_workload_ip(id, 90)
                 .await?
-                .context("workload deployed but has no IP for the ssh proxy device")?;
+                .context("workload deployed but no IP appeared for the ssh proxy device")?;
             self.lxd_ssh(&format!(
                 "sudo lxc config device add {hostname} ssh-proxy proxy \
                  listen=tcp:0.0.0.0:{port} connect=tcp:{ip}:22"
