@@ -286,21 +286,46 @@ impl MaasBackend {
             mac
         } else {
             // Tenant path: plain compose auto-boots on the pod default
-            // network — stop it before PXE, retag the NIC parent to the
-            // tenant VLAN, then read the REAL MAC (device surgery resets
-            // volatile.hwaddr — vm-provision lesson #2).
+            // (mgmt) network and its PXE steals the MAC — discovery
+            // attributes it to the host record and the machine self-
+            // enlists an eth0. Stop, retag to the tenant VLAN, then SET a
+            // fresh MAC that has never touched any network: it cannot be
+            // stolen, so create-physical always succeeds.
+            let mac = random_mac();
             self.lxd_ssh(&format!(
                 "sudo lxc stop -f {hostname} 2>/dev/null; \
                  sudo lxc config device set {hostname} eth0 parent={parent} >/dev/null 2>&1; \
-                 sudo lxc config get {hostname} volatile.eth0.hwaddr",
+                 sudo lxc config set {hostname} volatile.eth0.hwaddr {mac}",
                 parent = self.config.lxd_nic_parent,
             ))
             .await
-            .context("retag NIC to tenant VLAN")?
-            .trim()
-            .to_string()
+            .context("retag NIC + set fresh MAC")?;
+            mac
         };
         self.maas(&["machine", "mark-broken", &sid]).await?;
+        if !self.config.lxd_nic_parent.is_empty() {
+            // The auto-boot's PXE self-enlisted an eth0 on the machine;
+            // mark-broken schedules its async cleanup (temporal worker) —
+            // wait it out or create-physical collides on the name.
+            let cleanup_start = std::time::Instant::now();
+            loop {
+                let machine = self
+                    .maas_json(&["machine", "read", &sid])
+                    .await
+                    .context("machine read while waiting for interface cleanup")?;
+                let n = machine["interface_set"]
+                    .as_array()
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                if cleanup_start.elapsed().as_secs() > 30 {
+                    bail!("self-enlisted interface not cleaned within 30s of mark-broken");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
         let iface = self
             .maas_json(&[
                 "interfaces",
