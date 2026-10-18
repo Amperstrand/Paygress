@@ -141,6 +141,7 @@ impl ProviderService {
                         .maas_distro_series
                         .clone()
                         .unwrap_or_else(|| "noble".into()),
+                    listen_host: config.public_ip.clone(),
                 }))
             }
         };

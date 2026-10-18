@@ -48,6 +48,12 @@ pub struct MaasConfig {
     pub profile: String,
     /// Distro series deployed on spawn (e.g. `noble`).
     pub distro_series: String,
+    /// Host address the SSH DNAT rules listen on (the provider public_ip):
+    /// NAT-mode LXD proxies reject wildcard listens, non-NAT proxies are
+    /// unsupported on VM instances, and NAT connect-IPs must be LXD-static —
+    /// so the forward is host iptables DNAT, the same mechanism the bench's
+    /// public port-forward uses.
+    pub listen_host: String,
 }
 
 pub struct MaasBackend {
@@ -280,11 +286,14 @@ impl MaasBackend {
                 .await?
                 .context("workload deployed but no IP appeared for the ssh proxy device")?;
             self.lxd_ssh(&format!(
-                "sudo lxc config device add {hostname} ssh-proxy proxy \
-                 listen=tcp:0.0.0.0:{port} connect=tcp:{ip}:22"
+                "sudo iptables -t nat -A PREROUTING -d {host} -p tcp --dport {port} \
+                 -j DNAT --to-destination {ip}:22 -m comment --comment paygress-{id} && \
+                 sudo iptables -I FORWARD 1 -d {ip} -p tcp --dport 22 -j ACCEPT \
+                 -m comment --comment paygress-{id}",
+                host = self.config.listen_host,
             ))
             .await
-            .context("add ssh proxy device")?;
+            .context("add ssh DNAT forward")?;
         }
 
         self.system_ids.lock().unwrap().insert(id, sid.to_string());
@@ -420,6 +429,12 @@ impl ComputeBackend for MaasBackend {
         // debris is a known failure mode (non-atomic) — sweep the host too.
         let _ = self
             .lxd_ssh(&format!("sudo lxc delete -f {hostname} 2>/dev/null"))
+            .await;
+        let _ = self
+            .lxd_ssh(&format!(
+                "sudo iptables -t nat -S PREROUTING | grep -F 'paygress-{id}' | sed 's/^-A /-t nat -D /' | while read -r r; do sudo iptables $r; done; \
+                 sudo iptables -S FORWARD | grep -F 'paygress-{id}' | sed 's/^-A /-D /' | while read -r r; do sudo iptables $r; done"
+            ))
             .await;
         self.system_ids.lock().unwrap().remove(&id);
         Ok(())
