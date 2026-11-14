@@ -14,6 +14,10 @@ pub enum BackendType {
     /// One VM per spawn, each with its own kernel. Requires `/dev/kvm` and
     /// `qemu-system-x86_64`; does not serve Docker templates.
     Kvm,
+    /// Amperstrand spike (#194): workloads are MAAS machines composed on a
+    /// VM host — one VM per tenant, region-managed lifecycle. Credentials
+    /// come from these fields or PAYGRESS_MAAS_* env vars, never the repo.
+    Maas,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +38,19 @@ pub struct ProviderConfig {
     pub proxmox_storage: String,
     pub proxmox_template: String,
     pub proxmox_bridge: String,
+
+    /// Region API base for the MAAS backend, e.g.
+    /// `http://maas-host:5240/MAAS/api/2.0`. Env fallback:
+    /// `PAYGRESS_MAAS_URL`.
+    #[serde(default)]
+    pub maas_url: Option<String>,
+    /// MAAS api key `consumer:token:secret`. Env fallback:
+    /// `PAYGRESS_MAAS_API_KEY`. Operator-side secret — never in the repo.
+    #[serde(default)]
+    pub maas_api_key: Option<String>,
+    /// VM host id workloads compose on. Env fallback: `PAYGRESS_MAAS_VM_HOST`.
+    #[serde(default)]
+    pub maas_vm_host_id: Option<u32>,
     pub vmid_range_start: u32,
     pub vmid_range_end: u32,
 
@@ -156,6 +173,9 @@ impl Default for ProviderConfig {
             proxmox_token_id: "root@pam!paygress".to_string(),
             proxmox_token_secret: String::new(),
             proxmox_node: "pve".to_string(),
+            maas_url: None,
+            maas_api_key: None,
+            maas_vm_host_id: None,
             proxmox_accept_invalid_certs: false,
             proxmox_storage: "local-lvm".to_string(),
             proxmox_template: "local:vztmpl/ubuntu-22.04-standard.tar.zst".to_string(),

@@ -23,7 +23,7 @@ pub(crate) use handlers::generate_password;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -102,6 +102,38 @@ impl ProviderService {
                 crate::lxd::docker_from_capabilities(&config.capabilities),
             )),
             BackendType::Docker => Arc::new(DockerBackend::new()),
+            BackendType::Maas => {
+                // Same fail-fast contract as KVM/Proxmox: a provider that
+                // cannot reach its region must refuse to start before any
+                // consumer commits a token. Credentials never live in the
+                // repo — config fields or PAYGRESS_MAAS_* env.
+                let url = config
+                    .maas_url
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var("PAYGRESS_MAAS_URL").ok())
+                    .context("MAAS backend needs maas_url or PAYGRESS_MAAS_URL")?;
+                let key = config
+                    .maas_api_key
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var("PAYGRESS_MAAS_API_KEY").ok())
+                    .context("MAAS backend needs maas_api_key or PAYGRESS_MAAS_API_KEY")?;
+                let vm_host = config
+                    .maas_vm_host_id
+                    .or_else(|| {
+                        std::env::var("PAYGRESS_MAAS_VM_HOST")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                    })
+                    .context("MAAS backend needs maas_vm_host_id or PAYGRESS_MAAS_VM_HOST")?;
+                let client = crate::maas::MaasClient::new(&url, &key)?;
+                if let Err(e) = crate::maas::MaasBackend::check_region_reachable(&client).await {
+                    tracing::error!("MAAS backend selected but region unreachable: {}", e);
+                    anyhow::bail!("MAAS region unreachable: {}", e);
+                }
+                Arc::new(crate::maas::MaasBackend::new(client, vm_host))
+            }
             BackendType::Kvm => {
                 // Fail at startup rather than at the first spawn, when a
                 // consumer has already committed a Cashu token.
@@ -339,7 +371,7 @@ impl ProviderService {
             api_endpoint: None,
             version: crate::nostr::SCHEMA_VERSION,
             isolation_level: match self.config.backend_type {
-                BackendType::Kvm => crate::nostr::IsolationLevel::DedicatedHost,
+                BackendType::Kvm | BackendType::Maas => crate::nostr::IsolationLevel::DedicatedHost,
                 BackendType::Proxmox | BackendType::LXD | BackendType::Docker => {
                     crate::nostr::IsolationLevel::SharedKernel
                 }

@@ -154,6 +154,9 @@ pub(super) async fn execute_setup(args: SetupArgs, _verbose: bool) -> Result<()>
     // proxmox_* fields are only meaningful for `backend == Proxmox`;
     // other backends store empty strings so the JSON keeps its shape.
     let config = ProviderConfig {
+        maas_url: None,
+        maas_api_key: None,
+        maas_vm_host_id: None,
         backend_type: args.backend,
         public_ip,
         proxmox_url: args.proxmox_url.unwrap_or_default(),
@@ -212,6 +215,19 @@ pub(super) async fn execute_setup(args: SetupArgs, _verbose: bool) -> Result<()>
                 ),
                 Err(e) => println!("  {} KVM unavailable: {}", "✗".red(), e),
             }
+            return finalize_setup(&config.provider_name);
+        }
+        BackendType::Maas => {
+            println!("  {} Backend = MAAS (Amperstrand spike).", "⚙".yellow());
+            println!(
+                "  {} Set PAYGRESS_MAAS_URL / PAYGRESS_MAAS_API_KEY / PAYGRESS_MAAS_VM_HOST",
+                "→".cyan()
+            );
+            println!(
+                "  {} or maas_url / maas_api_key / maas_vm_host_id in the config; credentials",
+                "→".cyan()
+            );
+            println!("  {} never belong in the repo.", "→".cyan());
             return finalize_setup(&config.provider_name);
         }
         BackendType::Docker => {
